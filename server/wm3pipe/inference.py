@@ -11,12 +11,10 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 os.chdir(REPO)
 
-FIELDS = {
-    "167_2t": "167_2t", "151_msl": "151_msl", "165_10u": "165_10u", "166_10v": "166_10v",
-    "129_z_500": "129_z_500", "130_t_850": "130_t_850",
-    "131_u_250": "131_u_250", "132_v_250": "132_v_250", "133_q_850": "133_q_850",
-    "142_lsp": "142_lsp",
-}
+from . import outputs  # noqa: E402  (shared precip de-transform)
+
+FIELDS = ["167_2t", "151_msl", "165_10u", "166_10v", "129_z_500", "130_t_850",
+          "131_u_250", "132_v_250", "133_q_850"]
 
 
 def load_model(weights="model/WeatherMesh3.pt", device="cuda"):
@@ -33,8 +31,6 @@ def run(model, gx, hx, t0_unix, era_mesh, lead_hours=6, device="cuda"):
         pred = pred[0]
     real = pred.float().cpu().numpy() * era_mesh.normalization_matrix_std + era_mesh.normalization_matrix_mean
 
-    fields = {}
-    for name in FIELDS:
-        v = real[..., era_mesh.full_varlist.index(name)]
-        fields[name] = np.clip(np.exp(v) * 1000.0, 0, 2000) if name == "142_lsp" else v
+    fields = {name: real[..., era_mesh.full_varlist.index(name)] for name in FIELDS}
+    fields["precip6h_mm"] = outputs.total_precip_6h_mm(real, era_mesh, clamp=True)
     return real, fields, float(out["latent_l2"])

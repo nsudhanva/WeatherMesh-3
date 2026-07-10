@@ -47,3 +47,6 @@ jobs:
             ${{ env.ECR_REPO }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Container self-test (imports torch/natten/matepoint/model, builds meshes)
+        run: docker run --rm ${{ env.ECR_REPO }}:${{ github.sha }} --selftest

@@ -14,10 +14,15 @@ EventBridge (cron, 00/06/12/18Z)
               → S3 (forecasts/init=…/lead=…)   +   CloudWatch (timings, validation, min/max)
 ```
 
-GPU compute is a **SageMaker Processing Job** rather than AWS Batch: Batch runs on
-EC2 G instances (blocked by an unraised on-demand-G quota), whereas SageMaker's
-quotas auto-approve. Jobs are ephemeral (~1 GPU-hr/day ≈ ~$1.4/day) instead of a
-GPU idling 24/7.
+> **Status:** the diagram is the *target* design. The g5 **processing-job quota is in
+> manual review**, so Step Functions/Processing is committed as IaC (`infra/`) but **not
+> deployed**. The **live** runner is a 6-hourly cron on a SageMaker notebook GPU that runs
+> the source via `uv` (`infra/cron-onstart.sh`) — a continuously-on instance (~24 GPU-hr/day).
+> The ephemeral ~1 GPU-hr/day figure applies to the Processing design once the quota clears.
+
+Why Processing over AWS Batch (in the target design): Batch runs on EC2 G instances,
+blocked by the same on-demand-G quota. SageMaker's endpoint/notebook quotas auto-approved
+instantly; the *processing-job* quota did not — hence the notebook-cron interim.
 
 ## Package (`server/wm3pipe`)
 | module | responsibility |
@@ -42,10 +47,18 @@ Local smoke (CPU, no model — validates fetch + preprocess shapes/ranges):
 ```bash
 uv run --with boto3 --with eccodes python server/tests/smoke_fetch.py
 ```
-Container (GPU; weights fetched from S3 at runtime):
+Container (GPU; fetches weights from S3, writes forecasts to S3):
 ```bash
 docker build -f server/Dockerfile -t wm3-pipeline .
-docker run --gpus all -e WM3_WEIGHTS=/weights/WeatherMesh3.pt wm3-pipeline --lead-hours 6
+docker run --gpus all \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION=us-east-1 \
+  -e WM3_WEIGHTS_S3=s3://wm3-gpu-194290773983/model/WeatherMesh3.pt \
+  -e WM3_OUTPUT_BUCKET=wm3-forecasts-194290773983 \
+  wm3-pipeline --lead-hours 6
+```
+Container self-test (no GPU/weights — imports the stack + builds meshes, used in CI):
+```bash
+docker run --rm wm3-pipeline --selftest
 ```
 
 ## Output format
@@ -66,6 +79,8 @@ latest.json          # pointer to the newest cycle
 
 ## Monitoring (CloudWatch namespace `WeatherMesh3`)
 `fetch_seconds`, `preprocess_seconds`, `inference_seconds`, `cycle_seconds`,
-`cycle_success`, `output_valid`, `nan_count`, and field bounds
-(`t2m_min_C`/`max`, `mslp_*`, `jet250_max_ms`, `precip_max_mm`, `latent_l2`).
-A dashboard visualizes these; an alarm on `cycle_success`/staleness pages SNS.
+`cycle_success`, `output_valid`, `nonfinite_count`, field bounds (`t2m_*`, `mslp_*`,
+`jet250_max_ms`), and physical-consistency diagnostics (`neg_humidity_frac`,
+`dewpoint_gt_temp_frac`, `precip_capped_frac`, `precip_p99_mm`). Dashboard body in
+`infra/dash.json`; a staleness/failure alarm pages SNS, and `run_cycle` also publishes
+to SNS directly on failure.

@@ -1,6 +1,8 @@
 # Orchestration & automation
 
-Two runners share the same container + `run_cycle` entrypoint.
+Two runners share the `run_cycle` entrypoint but **not** the same environment: the
+production path runs the **container image**; the interim notebook cron runs the
+**source via `uv`**.
 
 ## Production: EventBridge → Step Functions → SageMaker Processing
 Serverless, ephemeral GPU per cycle. `statemachine.json` is the state machine

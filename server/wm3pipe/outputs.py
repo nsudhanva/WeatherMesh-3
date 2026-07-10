@@ -36,6 +36,27 @@ UPPER = {
 }
 
 
+# Extreme but sub-record 6h rainfall; cells at the cap flag an unreliable de-transform.
+PRECIP_CAP_MM = 1000.0
+
+
+def total_precip_6h_mm(real, era_mesh, clamp=True):
+    """6h total precip (large-scale + convective) in mm. Single source of truth.
+
+    Precip is stored in log space; the exp() inverse is uncertain and heavy-tailed,
+    so this product is experimental. clamp=False preserves inf/nan so validation can
+    detect a broken de-transform; clamp=True is the physically-bounded product.
+    """
+    fv = era_mesh.full_varlist
+    lsp = real[..., fv.index("142_lsp-6h")].astype("float64")
+    cp = real[..., fv.index("143_cp-6h")].astype("float64")
+    with np.errstate(over="ignore"):
+        tp = (np.exp(lsp) + np.exp(cp)) * 1000.0
+    if clamp:
+        tp = np.clip(np.nan_to_num(tp, nan=0.0, posinf=PRECIP_CAP_MM, neginf=0.0), 0, PRECIP_CAP_MM)
+    return tp.astype("float32")
+
+
 def write_netcdf(real, era_mesh, meta, path):
     import xarray as xr
 
@@ -56,8 +77,9 @@ def write_netcdf(real, era_mesh, meta, path):
                               np.sqrt(ch("165_10u") ** 2 + ch("166_10v") ** 2)[None], {"units": "m/s"})
     data["wind_speed_100m"] = (("time", "lat", "lon"),
                                np.sqrt(ch("246_100u") ** 2 + ch("247_100v") ** 2)[None], {"units": "m/s"})
-    tp6 = np.clip((np.exp(ch("142_lsp-6h")) + np.exp(ch("143_cp-6h"))) * 1000.0, 0, 2000)
-    data["total_precipitation_6h"] = (("time", "lat", "lon"), tp6[None], {"units": "mm"})
+    tp6 = total_precip_6h_mm(real, era_mesh, clamp=True)
+    data["total_precipitation_6h"] = (("time", "lat", "lon"), tp6[None],
+                                      {"units": "mm", "note": "EXPERIMENTAL: log-space de-transform, capped at %g mm" % PRECIP_CAP_MM})
 
     for out, (src, unit) in UPPER.items():
         cube = np.stack([ch(f"{src}_{L}") for L in API_LEVELS], axis=0)
@@ -112,7 +134,7 @@ def write_overview_plot(fields, path):
     panel(ax[0, 0], fields["167_2t"] - 273.15, "2m temperature (degC)", "RdBu_r")
     panel(ax[0, 1], fields["151_msl"] / 100, "MSLP (hPa)", "viridis")
     panel(ax[1, 0], jet, "250 hPa wind speed (m/s)", "plasma", 0, clim(jet)[1])
-    panel(ax[1, 1], fields["142_lsp"], "large-scale precip (mm)", "Blues", 0, clim(fields["142_lsp"], hi=99)[1])
+    panel(ax[1, 1], fields["precip6h_mm"], "6h total precip (mm, experimental)", "Blues", 0, 50)
     fig.tight_layout()
     fig.savefig(path, dpi=90)
     plt.close(fig)

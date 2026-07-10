@@ -32,9 +32,41 @@ def _alert(subject, message):
         log.warning("sns publish failed: %s", e)
 
 
+def _ensure_weights(weights):
+    """If the weights file is not present locally, fetch it from S3 (WM3_WEIGHTS_S3).
+
+    Lets the container be self-sufficient (no host mount needed)."""
+    if os.path.exists(weights):
+        return weights
+    uri = config.WEIGHTS_S3
+    if not uri.startswith("s3://"):
+        return weights
+    bkt, key = uri[5:].split("/", 1)
+    dst = "/tmp/WeatherMesh3.pt"
+    log.info("downloading weights %s -> %s", uri, dst)
+    boto3.client("s3", region_name=config.REGION).download_file(bkt, key, dst)
+    return dst
+
+
+def selftest():
+    """Import the full model stack + build meshes on CPU (no weights, no forward).
+
+    Verifies the container's deps (torch/natten/matepoint/model) actually import and
+    the model constructs. Runs in CI on a CPU runner; the GPU forward is separate."""
+    import torch
+    log.info("selftest: torch %s", torch.__version__)
+    import natten  # noqa: F401
+    import matepoint  # noqa: F401
+    gm, hm = preprocess.build_meshes()
+    em = preprocess.build_output_mesh()
+    assert gm.n_vars == hm.n_vars == em.n_vars == 157
+    log.info("selftest OK: natten+matepoint import, meshes build (n_vars=157)")
+
+
 def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=None):
     try:
         with M.timed("cycle_seconds"):
+            weights = _ensure_weights(weights)
             date, hour = gfs.latest_available_cycle()
             init_dt = datetime.strptime(f"{date}{hour:02d}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
             init_iso = init_dt.strftime("%Y-%m-%dT%HZ")
@@ -54,8 +86,9 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
 
             checks = validate(fields, real, era_mesh)
             for k in ("t2m_min_C", "t2m_max_C", "t2m_mean_C", "mslp_min_hPa", "mslp_max_hPa",
-                      "wind10_max_ms", "jet250_max_ms", "precip_max_mm", "nan_count",
-                      "neg_humidity_frac", "dewpoint_gt_temp_frac"):
+                      "wind10_max_ms", "jet250_max_ms", "nonfinite_count", "nan_count",
+                      "neg_humidity_frac", "dewpoint_gt_temp_frac",
+                      "precip_capped_frac", "precip_p99_mm"):
                 M.put(k, checks[k])
             M.put("latent_l2", l2)
             M.put("output_valid", 1 if checks["valid"] else 0)
@@ -95,7 +128,11 @@ def main():
     p.add_argument("--weights", default=os.environ.get("WM3_WEIGHTS", "model/WeatherMesh3.pt"))
     p.add_argument("--device", default=os.environ.get("WM3_DEVICE", "cuda"))
     p.add_argument("--bucket", default=None)
+    p.add_argument("--selftest", action="store_true", help="import model + build meshes, then exit (no GPU/weights)")
     a = p.parse_args()
+    if a.selftest:
+        selftest()
+        return
     run(a.lead_hours, a.weights, a.device, a.bucket)
 
 
