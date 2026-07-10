@@ -1,33 +1,75 @@
-"""Serialize a forecast to netCDF + JSON metadata + a proof-of-life plot."""
+"""Serialize a forecast to netCDF + JSON metadata + a proof-of-life plot.
+
+The netCDF follows the WindBorne gridded-forecast API naming/units
+(https://api.windbornesystems.com/forecasts/version_1/gridded-forecast/) so
+saved files match what their `/gridded` endpoint returns.
+"""
 import json
 from pathlib import Path
 
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
-LATS = np.arange(90, -90, -0.25)[:720]
-LONS = np.arange(0, 360, 0.25)
+LATS = np.arange(90, -90, -0.25)[:720].astype("float32")
+LONS = np.arange(0, 360, 0.25).astype("float32")
+API_LEVELS = [10, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+              550, 600, 650, 700, 750, 800, 850, 900, 925, 950, 975, 1000]
 
-_NC_VARS = {
-    "t2m": ("167_2t", "K", "2 metre temperature"),
-    "mslp": ("151_msl", "Pa", "mean sea level pressure"),
-    "u10": ("165_10u", "m s-1", "10 metre U wind"),
-    "v10": ("166_10v", "m s-1", "10 metre V wind"),
-    "z500": ("129_z_500", "m2 s-2", "500 hPa geopotential"),
-    "t850": ("130_t_850", "K", "850 hPa temperature"),
-    "precip_lsp": ("142_lsp", "mm", "large-scale precipitation"),
+# WindBorne surface name -> (model varid, units)
+SFC = {
+    "temperature_2m": ("167_2t", "K"),
+    "dewpoint_2m": ("168_2d", "K"),
+    "pressure_msl": ("151_msl", "Pa"),
+    "wind_u_10m": ("165_10u", "m/s"),
+    "wind_v_10m": ("166_10v", "m/s"),
+    "wind_u_100m": ("246_100u", "m/s"),
+    "wind_v_100m": ("247_100v", "m/s"),
+    "total_cloud_cover": ("45_tcc", "0-1"),
+}
+# WindBorne upper-level name -> (model varid, units)
+UPPER = {
+    "geopotential": ("129_z", "m2/s2"),
+    "temperature": ("130_t", "K"),
+    "wind_u": ("131_u", "m/s"),
+    "wind_v": ("132_v", "m/s"),
+    "specific_humidity": ("133_q", "kg/kg"),
 }
 
 
-def write_netcdf(fields, meta, path):
+def write_netcdf(real, era_mesh, meta, path):
     import xarray as xr
+
+    fv = era_mesh.full_varlist
+
+    def ch(name):
+        return real[..., fv.index(name)].astype("float32")
+
+    data = {}
+    for out, (src, unit) in SFC.items():
+        v = np.clip(ch(src), 0, 1) if out == "total_cloud_cover" else ch(src)
+        data[out] = (("time", "lat", "lon"), v[None], {"units": unit})
+    data["wind_speed_10m"] = (("time", "lat", "lon"),
+                              np.sqrt(ch("165_10u") ** 2 + ch("166_10v") ** 2)[None], {"units": "m/s"})
+    data["wind_speed_100m"] = (("time", "lat", "lon"),
+                               np.sqrt(ch("246_100u") ** 2 + ch("247_100v") ** 2)[None], {"units": "m/s"})
+    tp6 = (np.exp(ch("142_lsp-6h")) + np.exp(ch("143_cp-6h"))) * 1000.0
+    data["total_precipitation_6h"] = (("time", "lat", "lon"), tp6[None], {"units": "mm"})
+
+    for out, (src, unit) in UPPER.items():
+        cube = np.stack([ch(f"{src}_{L}") for L in API_LEVELS], axis=0)
+        data[out] = (("time", "level", "lat", "lon"), cube[None], {"units": unit})
+
+    valid = np.datetime64(meta["valid_time"].replace("Z", ""))
     ds = xr.Dataset(
-        {name: (("lat", "lon"), fields[src].astype("float32"), {"units": u, "long_name": ln})
-         for name, (src, u, ln) in _NC_VARS.items()},
-        coords={"lat": LATS.astype("float32"), "lon": LONS.astype("float32")},
-        attrs=meta,
+        data,
+        coords={"time": [valid], "level": API_LEVELS, "lat": LATS, "lon": LONS},
+        attrs={**meta, "Conventions": "CF-1.8", "institution": "reproduction of WindBorne WeatherMesh-3"},
     )
-    ds.to_netcdf(path, engine="netcdf4")
+    ds["level"].attrs = {"units": "hPa", "long_name": "pressure level"}
+    ds["lat"].attrs = {"units": "degrees_north"}
+    ds["lon"].attrs = {"units": "degrees_east"}
+    enc = {v: {"zlib": True, "complevel": 4} for v in data}
+    ds.to_netcdf(path, engine="netcdf4", encoding=enc)
     return path
 
 

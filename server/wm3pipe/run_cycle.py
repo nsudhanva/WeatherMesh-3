@@ -50,7 +50,7 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
             model = inference.load_model(weights, device)
             t0 = to_unix(init_dt)
             with M.timed("inference_seconds"):
-                _real, fields, l2 = inference.run(model, gx, hx, t0, era_mesh, lead_hours, device)
+                real, fields, l2 = inference.run(model, gx, hx, t0, era_mesh, lead_hours, device)
 
             checks = validate(fields)
             for k in ("t2m_min_C", "t2m_max_C", "t2m_mean_C", "mslp_min_hPa", "mslp_max_hPa",
@@ -69,7 +69,7 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
             }
             ncname = f"weathermesh3.f{lead_hours:03d}.nc"
             files = {
-                ncname: outputs.write_netcdf(fields, meta, tmp / ncname),
+                ncname: outputs.write_netcdf(real, era_mesh, meta, tmp / ncname),
                 "overview.png": outputs.write_overview_plot(fields, tmp / "overview.png"),
                 "metadata.json": outputs.write_metadata(meta, tmp / "metadata.json"),
             }

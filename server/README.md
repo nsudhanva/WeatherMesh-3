@@ -48,6 +48,14 @@ docker build -f server/Dockerfile -t wm3-pipeline .
 docker run --gpus all -e WM3_WEIGHTS=/weights/WeatherMesh3.pt wm3-pipeline --lead-hours 6
 ```
 
+## Output format
+The netCDF matches the [WindBorne gridded-forecast API](https://api.windbornesystems.com/forecasts/version_1/gridded-forecast/gridded-forecast/)
+schema (the Part 1 bonus): surface vars `temperature_2m`, `dewpoint_2m`,
+`pressure_msl`, `wind_{u,v,speed}_{10m,100m}`, `total_cloud_cover`,
+`total_precipitation_6h`; upper-level `geopotential`, `temperature`, `wind_u`,
+`wind_v`, `specific_humidity` on `(time, level, lat, lon)` with the API's 25
+pressure levels; CF-1.8 metadata.
+
 ## S3 output layout — `s3://wm3-forecasts-<account>/`
 ```
 forecasts/init=2026-07-10T18Z/lead=006h/weathermesh3.f006.nc
