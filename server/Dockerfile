@@ -1,24 +1,23 @@
 # WeatherMesh-3 real-time inference container (SageMaker Processing / any GPU host).
 # Build from the repo root:  docker build -f server/Dockerfile -t wm3-pipeline .
-# Weights are NOT baked in (1.2 GB) — they are fetched from S3 at runtime.
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# Weights are NOT baked in (1.2 GB) — fetched from S3 at runtime.
+# Base already ships Python 3.11 + torch 2.5.1 + CUDA 12.1, so no apt / no torch reinstall.
+FROM pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
-ENV DEBIAN_FRONTEND=noninteractive PATH="/root/.local/bin:${PATH}" \
-    WM3_DEVICE=cuda UV_HTTP_TIMEOUT=300
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 python3.11-venv python3-pip curl ca-certificates git \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
+ENV WM3_DEVICE=cuda PIP_ROOT_USER_ACTION=ignore PIP_NO_CACHE_DIR=1
 WORKDIR /opt/wm3
-# Only the code the model + pipeline need (no weights, no huge/ data, no .venv)
-COPY pyproject.toml uv.lock utils.py meshes.py model.py ./
+
+COPY pyproject.toml utils.py meshes.py model.py ./
 COPY model_latlon ./model_latlon
 COPY constants ./constants
 COPY server ./server
 
-# Model deps (torch-cuda, natten via shi-labs allow-insecure-host, matepoint) + pipeline extras
-RUN uv sync --no-group notebook \
-    && uv pip install -r server/requirements-pipeline.txt
+# natten (CUDA neighborhood attention; shi-labs cert is expired -> trusted-host),
+# matepoint (test.pypi), and the pipeline deps.
+RUN pip install "natten==0.17.3+torch240cu121" \
+        --find-links https://shi-labs.com/natten/wheels/ --trusted-host shi-labs.com \
+    && pip install "matepoint" \
+        --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
+    && pip install -r server/requirements-pipeline.txt
 
-ENTRYPOINT ["uv", "run", "python", "-m", "server.wm3pipe.run_cycle"]
+ENTRYPOINT ["python", "-m", "server.wm3pipe.run_cycle"]
