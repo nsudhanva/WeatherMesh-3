@@ -1,35 +1,30 @@
-# Orchestration & automation
+# Automation
 
-Two runners share the `run_cycle` entrypoint but **not** the same environment: the
-production path runs the **container image**; the interim notebook cron runs the
-**source via `uv`**.
+**The live runner is a 6-hourly cron on the SageMaker notebook GPU** — `cron-onstart.sh`
+is the notebook lifecycle that (on boot) ensures `crond` is running, installs the
+crontab (`0 */6 * * *`), and kicks off one cycle immediately. Each run self-installs
+`uv`, pulls the latest `server/` code, runs `run_cycle`, writes to S3, emits CloudWatch
+metrics, and publishes to SNS on failure.
 
-## Production: EventBridge → Step Functions → SageMaker Processing
-Serverless, ephemeral GPU per cycle. `statemachine.json` is the state machine
-(one processing job, retries, catch → SNS).
-
-```bash
-# state machine (needs a role that can sagemaker:CreateProcessingJob + iam:PassRole + sns:Publish)
-aws stepfunctions create-state-machine --name wm3-cycle \
-  --definition file://statemachine.json --role-arn <SFN_ROLE_ARN> --region us-east-1
-
-# 6-hourly trigger
-aws scheduler create-schedule --name wm3-6h \
-  --schedule-expression 'cron(0 0/6 * * ? *)' \
-  --flexible-time-window '{"Mode":"OFF"}' \
-  --target '{"Arn":"<STATE_MACHINE_ARN>","RoleArn":"<SCHEDULER_ROLE_ARN>"}' --region us-east-1
-```
-
-Blocked as of now only by the `ml.g5.xlarge for processing job usage` quota being
-in manual review. Everything else (image, role, S3, SNS) is in place.
-
-## Interim: 6-hourly cron on the SageMaker notebook GPU
-`cron-onstart.sh` is a notebook lifecycle that installs a 6-hourly cron and runs one
-cycle immediately. This gives a real 24h+ runner today, without waiting on the quota.
-Attach it and (re)start the notebook:
+Deploy / update it:
 
 ```bash
 aws sagemaker create-notebook-instance-lifecycle-config \
   --notebook-instance-lifecycle-config-name wm3-cron \
   --on-start Content=$(base64 -i cron-onstart.sh) --region us-east-1
+# attach to the notebook (while stopped) and start it
+aws sagemaker update-notebook-instance --notebook-instance-name weathermesh3-gpu-nb \
+  --lifecycle-config-name wm3-cron --region us-east-1
 ```
+
+`dash.json` is the CloudWatch dashboard body (`aws cloudwatch put-dashboard
+--dashboard-name WeatherMesh3 --dashboard-body file://dash.json`).
+
+## Not implemented: serverless orchestration
+
+A production system would replace the always-on notebook with **EventBridge →
+Step Functions → SageMaker Processing** (ephemeral GPU per cycle). It is **not built
+here**: the `ml.g5.xlarge` processing-job quota is in manual review, so a Processing
+job cannot launch, and there was no way to finish *and test* that path. The notebook
+cron already satisfies the requirement (automated, real-time, 24h+), so this is left as
+a described future step (see the docs' "99.9% uptime" answer), not as dead IaC.
