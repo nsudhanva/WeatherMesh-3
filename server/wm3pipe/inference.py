@@ -29,6 +29,8 @@ def run(model, gx, hx, t0_unix, era_mesh, lead_hours=6, device="cuda"):
     with torch.no_grad():
         out = model(x, [lead_hours])
     pred = out[lead_hours][0]
+    if pred.ndim == 4:
+        pred = pred[0]
     real = pred.float().cpu().numpy() * era_mesh.normalization_matrix_std + era_mesh.normalization_matrix_mean
 
     fields = {}
