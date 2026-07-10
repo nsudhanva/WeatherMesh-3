@@ -36,5 +36,5 @@ def run(model, gx, hx, t0_unix, era_mesh, lead_hours=6, device="cuda"):
     fields = {}
     for name in FIELDS:
         v = real[..., era_mesh.full_varlist.index(name)]
-        fields[name] = np.exp(v) * 1000.0 if name == "142_lsp" else v
+        fields[name] = np.clip(np.exp(v) * 1000.0, 0, 2000) if name == "142_lsp" else v
     return real, fields, float(out["latent_l2"])
