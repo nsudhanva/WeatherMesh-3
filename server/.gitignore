@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+# vendored natten wheel (451MB) — fetched from S3 at build time, never committed
+wheels/
+*.whl
 # generated forecast artifacts (belong in S3, not git)
 *.nc
 *.png

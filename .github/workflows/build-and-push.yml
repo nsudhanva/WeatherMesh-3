@@ -32,6 +32,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Fetch vendored natten wheel from S3
+        run: |
+          mkdir -p server/wheels
+          aws s3 cp s3://wm3-gpu-194290773983/wheels/natten-0.17.3+torch240cu121-cp311-cp311-linux_x86_64.whl server/wheels/
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 

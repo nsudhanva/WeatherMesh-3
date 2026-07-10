@@ -49,6 +49,9 @@ uv run --with boto3 --with eccodes python server/tests/smoke_fetch.py
 ```
 Container (GPU; fetches weights from S3, writes forecasts to S3):
 ```bash
+# natten builds from a vendored wheel (shi-labs host is unreliable) — fetch it first
+mkdir -p server/wheels && aws s3 cp \
+  s3://wm3-gpu-194290773983/wheels/natten-0.17.3+torch240cu121-cp311-cp311-linux_x86_64.whl server/wheels/
 docker build -f server/Dockerfile -t wm3-pipeline .
 docker run --gpus all \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION=us-east-1 \

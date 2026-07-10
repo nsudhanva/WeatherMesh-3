@@ -12,10 +12,10 @@ COPY model_latlon ./model_latlon
 COPY constants ./constants
 COPY server ./server
 
-# natten (CUDA neighborhood attention; shi-labs cert is expired -> trusted-host),
-# matepoint (test.pypi), and the pipeline deps.
-RUN pip install "natten==0.17.3+torch240cu121" \
-        --find-links https://shi-labs.com/natten/wheels/ --trusted-host shi-labs.com \
+# natten from a vendored wheel (server/wheels/, fetched from S3 before build) — the
+# upstream shi-labs host has an expired cert and times out, so we don't build against it.
+# matepoint (test.pypi) + pipeline deps come from reliable indexes.
+RUN pip install server/wheels/natten-*.whl \
     && pip install "matepoint" \
         --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ \
     && pip install -r server/requirements-pipeline.txt
