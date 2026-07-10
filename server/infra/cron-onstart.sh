@@ -10,6 +10,8 @@ cat > /home/ec2-user/SageMaker/wm3_cron.sh <<'C'
 export HOME=/home/ec2-user
 export PATH=$HOME/.local/bin:$PATH
 cd /home/ec2-user/SageMaker/WeatherMesh-3 || exit 0
+git fetch origin && git checkout origin/main -- server
+uv pip install -q -r server/requirements-pipeline.txt
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 LOG=/home/ec2-user/SageMaker/wm3_cron_$TS.log
 WM3_OUTPUT_BUCKET=wm3-forecasts-194290773983 AWS_REGION=us-east-1 \
