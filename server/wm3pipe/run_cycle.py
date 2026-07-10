@@ -1,7 +1,8 @@
 """One real-time WeatherMesh-3 cycle: GFS -> preprocess -> infer -> validate -> S3.
 
-Emits CloudWatch metrics throughout and alerts (SNS) on failure. This is the
-unit of work the scheduler/Step-Functions state machine invokes each 6h.
+Emits CloudWatch metrics throughout and alerts (SNS) on failure or invalid output.
+This is the unit of work the 6-hourly notebook cron invokes (see infra/cron-onstart.sh).
+Invalid forecasts are quarantined and never promoted to latest.json.
 """
 import argparse
 import os
@@ -94,7 +95,7 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
             for k in ("t2m_min_C", "t2m_max_C", "t2m_mean_C", "mslp_min_hPa", "mslp_max_hPa",
                       "wind10_max_ms", "jet250_max_ms", "nonfinite_count", "nan_count",
                       "neg_humidity_frac", "dewpoint_gt_temp_frac",
-                      "precip_capped_frac", "precip_p99_mm"):
+                      "precip_capped_frac", "precip_capped_mass_frac", "precip_p99_mm"):
                 M.put(k, checks[k])
             M.put("latent_l2", l2)
             M.put("output_valid", 1 if checks["valid"] else 0)
@@ -113,13 +114,20 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
                 "overview.png": outputs.write_overview_plot(fields, tmp / "overview.png"),
                 "metadata.json": outputs.write_metadata(meta, tmp / "metadata.json"),
             }
-            uris = s3io.upload_cycle(files, init_iso, lead_hours, bucket)
-            s3io.write_pointer(init_iso, lead_hours, uris, meta, bucket)
-            s3io.write_manifest(bucket)
+            valid = bool(checks["valid"])
+            # invalid forecasts go to a quarantine prefix and do NOT become latest.json
+            uris = s3io.upload_cycle(files, init_iso, lead_hours, bucket, valid=valid)
+            s3io.write_pointer(init_iso, lead_hours, uris, meta, bucket, valid=valid)
+            if valid:
+                s3io.write_manifest(bucket)
+            else:
+                _alert("WeatherMesh-3 output INVALID (quarantined)",
+                       f"init={init_iso} +{lead_hours}h failed validation; NOT promoted to latest.\n\n{checks}")
 
             M.put("cycle_success", 1)
-            log.info("cycle OK %s +%dh valid=%s inference_l2=%.3f", init_iso, lead_hours, checks["valid"], l2)
-            return {"init": init_iso, "lead_hours": lead_hours, "valid": checks["valid"], "uris": uris}
+            log.info("cycle done %s +%dh valid=%s published=%s inference_l2=%.3f",
+                     init_iso, lead_hours, valid, valid, l2)
+            return {"init": init_iso, "lead_hours": lead_hours, "valid": valid, "published": valid, "uris": uris}
     except Exception as e:
         M.put("cycle_success", 0)
         tb = traceback.format_exc()

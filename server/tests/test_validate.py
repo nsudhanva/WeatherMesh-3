@@ -37,11 +37,11 @@ def check(name, cond):
 
 
 ok = True
-# 1) clean output -> valid, precip reliable, zero non-finite
+# 1) clean output -> valid, zero non-finite; precip stays NOT reliable (transform unverified)
 r = make_real(); m = validate(fields_of(r), r, ERA)
 ok &= check("clean: valid", m["valid"])
-ok &= check("clean: precip_reliable", m["precip_reliable"])
 ok &= check("clean: nonfinite==0", m["nonfinite_count"] == 0)
+ok &= check("clean: precip_reliable False (unverified transform)", not m["precip_reliable"])
 
 # 2) NaN in an UNSELECTED channel (humidity level not in the plotted subset) is caught
 r = make_real(); r[..., FV.index("133_q_300")] = np.nan

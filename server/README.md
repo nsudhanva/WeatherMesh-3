@@ -7,18 +7,18 @@ publishes physically-validated forecasts to **S3**, on a 6-hourly schedule, with
 ## Architecture
 
 ```
-EventBridge (cron, 00/06/12/18Z)
-      → Step Functions (retry + catch → SNS alert)
-        → SageMaker Processing Job  (ml.g5.xlarge, ephemeral GPU, this container)
-            run_cycle:  GFS fetch → preprocess → WM-3 → validate → netCDF/plots
-              → S3 (forecasts/init=…/lead=…)   +   CloudWatch (timings, validation, min/max)
+SageMaker notebook GPU — 6-hourly cron (00/06/12/18Z)
+   run_cycle:  GFS fetch → preprocess → WM-3 → validate → netCDF/plots/metadata
+      → S3 (forecasts/init=…/lead=…; invalid → quarantine/…, never latest.json)
+      + CloudWatch (timings, output_valid, diagnostics)  + SNS (on failure/invalid)
 ```
 
-> **Status:** the diagram is the *target* design. The g5 **processing-job quota is in
-> manual review**, so Step Functions/Processing is committed as IaC (`infra/`) but **not
-> deployed**. The **live** runner is a 6-hourly cron on a SageMaker notebook GPU that runs
-> the source via `uv` (`infra/cron-onstart.sh`) — a continuously-on instance (~24 GPU-hr/day).
-> The ephemeral ~1 GPU-hr/day figure applies to the Processing design once the quota clears.
+> **Status:** the diagram is the *target* design and is **not implemented** — no
+> Step Functions / Processing IaC is committed, because the g5 processing-job quota is in
+> manual review (a Processing job can't launch or be tested). The **live** runner is a
+> 6-hourly cron on a SageMaker notebook GPU that runs the source via `uv`
+> (`infra/cron-onstart.sh`) — a continuously-on instance (~24 GPU-hr/day). The ephemeral
+> ~1 GPU-hr/day figure would apply to the Processing design once the quota clears.
 
 Why Processing over AWS Batch (in the target design): Batch runs on EC2 G instances,
 blocked by the same on-demand-G quota. SageMaker's endpoint/notebook quotas auto-approved

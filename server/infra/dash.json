@@ -15,9 +15,9 @@
                   ["WeatherMesh3", "t2m_max_C", "pipeline", "weathermesh3"]]}},
     {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6, "properties": {
       "title": "Physical-consistency diagnostics", "region": "us-east-1", "stat": "Average", "period": 3600,
-      "metrics": [["WeatherMesh3", "nan_count", "pipeline", "weathermesh3"],
+      "metrics": [["WeatherMesh3", "nonfinite_count", "pipeline", "weathermesh3"],
                   ["WeatherMesh3", "neg_humidity_frac", "pipeline", "weathermesh3"],
                   ["WeatherMesh3", "dewpoint_gt_temp_frac", "pipeline", "weathermesh3"],
-                  ["WeatherMesh3", "precip_max_mm", "pipeline", "weathermesh3"]]}}
+                  ["WeatherMesh3", "precip_capped_mass_frac", "pipeline", "weathermesh3"]]}}
   ]
 }

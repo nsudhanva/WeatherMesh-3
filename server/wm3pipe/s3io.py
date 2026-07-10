@@ -10,14 +10,16 @@ log = logging.getLogger("wm3pipe.s3io")
 _s3 = boto3.client("s3", region_name=config.REGION)
 
 
-def prefix(init_iso, lead_hours):
-    return f"forecasts/init={init_iso}/lead={lead_hours:03d}h"
+def prefix(init_iso, lead_hours, valid=True):
+    # invalid forecasts go to a quarantine tree and never become `latest.json`
+    root = "forecasts" if valid else "quarantine"
+    return f"{root}/init={init_iso}/lead={lead_hours:03d}h"
 
 
-def upload_cycle(local_files, init_iso, lead_hours, bucket=None):
+def upload_cycle(local_files, init_iso, lead_hours, bucket=None, valid=True):
     """local_files: dict s3-relative-name -> local path. Returns dict of s3 URIs."""
     bucket = bucket or config.OUTPUT_BUCKET
-    base = prefix(init_iso, lead_hours)
+    base = prefix(init_iso, lead_hours, valid)
     uris = {}
     for name, path in local_files.items():
         key = f"{base}/{name}"
@@ -27,14 +29,17 @@ def upload_cycle(local_files, init_iso, lead_hours, bucket=None):
     return uris
 
 
-def write_pointer(init_iso, lead_hours, uris, meta, bucket=None):
-    """Write forecasts/init=.../metadata.json and a top-level latest.json pointer."""
+def write_pointer(init_iso, lead_hours, uris, meta, bucket=None, valid=True):
+    """Write the per-init metadata.json. Only a VALID cycle updates latest.json."""
     bucket = bucket or config.OUTPUT_BUCKET
-    doc = {"init": init_iso, "lead_hours": lead_hours, "artifacts": uris, "metadata": meta}
+    root = "forecasts" if valid else "quarantine"
+    doc = {"init": init_iso, "lead_hours": lead_hours, "valid": valid,
+           "artifacts": uris, "metadata": meta}
     body = json.dumps(doc, indent=2, default=str).encode()
-    _s3.put_object(Bucket=bucket, Key=f"forecasts/init={init_iso}/metadata.json", Body=body)
-    _s3.put_object(Bucket=bucket, Key="latest.json", Body=body)
-    return f"s3://{bucket}/latest.json"
+    _s3.put_object(Bucket=bucket, Key=f"{root}/init={init_iso}/metadata.json", Body=body)
+    if valid:
+        _s3.put_object(Bucket=bucket, Key="latest.json", Body=body)
+    return f"s3://{bucket}/latest.json" if valid else f"s3://{bucket}/{root}/init={init_iso}/metadata.json"
 
 
 def write_manifest(bucket=None):
