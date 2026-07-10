@@ -44,3 +44,4 @@ for name, idx in [("2t", i2t), ("msl", imsl), ("t@500", it500)]:
 
 ok = -8 < gx[..., i2t].numpy().mean() < 8 and gx.shape[-1] == 157
 print("\nSMOKE:", "PASS" if ok else "FAIL")
+sys.exit(0 if ok else 1)

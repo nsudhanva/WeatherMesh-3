@@ -46,7 +46,11 @@ def write_netcdf(real, era_mesh, meta, path):
 
     data = {}
     for out, (src, unit) in SFC.items():
-        v = np.clip(ch(src), 0, 1) if out == "total_cloud_cover" else ch(src)
+        v = ch(src)
+        if out == "total_cloud_cover":
+            v = np.clip(v, 0, 1)
+        elif out == "dewpoint_2m":
+            v = np.minimum(v, ch("167_2t"))  # dewpoint cannot exceed air temperature
         data[out] = (("time", "lat", "lon"), v[None], {"units": unit})
     data["wind_speed_10m"] = (("time", "lat", "lon"),
                               np.sqrt(ch("165_10u") ** 2 + ch("166_10v") ** 2)[None], {"units": "m/s"})
@@ -57,6 +61,8 @@ def write_netcdf(real, era_mesh, meta, path):
 
     for out, (src, unit) in UPPER.items():
         cube = np.stack([ch(f"{src}_{L}") for L in API_LEVELS], axis=0)
+        if out == "specific_humidity":
+            cube = np.clip(cube, 0, None)  # humidity cannot be negative
         data[out] = (("time", "level", "lat", "lon"), cube[None], {"units": unit})
 
     valid = np.datetime64(meta["valid_time"].replace("Z", ""))

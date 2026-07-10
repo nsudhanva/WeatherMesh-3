@@ -52,9 +52,10 @@ def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=Non
             with M.timed("inference_seconds"):
                 real, fields, l2 = inference.run(model, gx, hx, t0, era_mesh, lead_hours, device)
 
-            checks = validate(fields)
+            checks = validate(fields, real, era_mesh)
             for k in ("t2m_min_C", "t2m_max_C", "t2m_mean_C", "mslp_min_hPa", "mslp_max_hPa",
-                      "wind10_max_ms", "jet250_max_ms", "precip_max_mm", "nan_count"):
+                      "wind10_max_ms", "jet250_max_ms", "precip_max_mm", "nan_count",
+                      "neg_humidity_frac", "dewpoint_gt_temp_frac"):
                 M.put(k, checks[k])
             M.put("latent_l2", l2)
             M.put("output_valid", 1 if checks["valid"] else 0)
