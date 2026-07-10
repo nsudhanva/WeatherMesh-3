@@ -52,7 +52,7 @@ def write_netcdf(real, era_mesh, meta, path):
                               np.sqrt(ch("165_10u") ** 2 + ch("166_10v") ** 2)[None], {"units": "m/s"})
     data["wind_speed_100m"] = (("time", "lat", "lon"),
                                np.sqrt(ch("246_100u") ** 2 + ch("247_100v") ** 2)[None], {"units": "m/s"})
-    tp6 = (np.exp(ch("142_lsp-6h")) + np.exp(ch("143_cp-6h"))) * 1000.0
+    tp6 = np.clip((np.exp(ch("142_lsp-6h")) + np.exp(ch("143_cp-6h"))) * 1000.0, 0, 2000)
     data["total_precipitation_6h"] = (("time", "lat", "lon"), tp6[None], {"units": "mm"})
 
     for out, (src, unit) in UPPER.items():
@@ -60,10 +60,12 @@ def write_netcdf(real, era_mesh, meta, path):
         data[out] = (("time", "level", "lat", "lon"), cube[None], {"units": unit})
 
     valid = np.datetime64(meta["valid_time"].replace("Z", ""))
+    safe_attrs = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in meta.items()}
+    safe_attrs.update({"Conventions": "CF-1.8", "institution": "reproduction of WindBorne WeatherMesh-3"})
     ds = xr.Dataset(
         data,
         coords={"time": [valid], "level": API_LEVELS, "lat": LATS, "lon": LONS},
-        attrs={**meta, "Conventions": "CF-1.8", "institution": "reproduction of WindBorne WeatherMesh-3"},
+        attrs=safe_attrs,
     )
     ds["level"].attrs = {"units": "hPa", "long_name": "pressure level"}
     ds["lat"].attrs = {"units": "degrees_north"}
