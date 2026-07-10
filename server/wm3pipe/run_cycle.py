@@ -1,0 +1,102 @@
+"""One real-time WeatherMesh-3 cycle: GFS -> preprocess -> infer -> validate -> S3.
+
+Emits CloudWatch metrics throughout and alerts (SNS) on failure. This is the
+unit of work the scheduler/Step-Functions state machine invokes each 6h.
+"""
+import argparse
+import os
+import tempfile
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+
+import boto3
+
+from . import config, gfs, preprocess, inference, outputs, s3io
+from . import metrics as M
+from .validate import validate
+
+from utils import to_unix, get_date, levels_gfs, levels_hres  # noqa: E402
+
+log = M.log
+
+
+def _alert(subject, message):
+    topic = os.environ.get("WM3_SNS_TOPIC")
+    if not topic:
+        return
+    try:
+        boto3.client("sns", region_name=config.REGION).publish(
+            TopicArn=topic, Subject=subject[:100], Message=message)
+    except Exception as e:
+        log.warning("sns publish failed: %s", e)
+
+
+def run(lead_hours=6, weights="model/WeatherMesh3.pt", device="cuda", bucket=None):
+    try:
+        with M.timed("cycle_seconds"):
+            date, hour = gfs.latest_available_cycle()
+            init_dt = datetime.strptime(f"{date}{hour:02d}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
+            init_iso = init_dt.strftime("%Y-%m-%dT%HZ")
+            levels = sorted(set(levels_gfs) | set(levels_hres))
+            log.info("cycle %s +%dh (GFS %d levels)", init_iso, lead_hours, len(levels))
+
+            with M.timed("fetch_seconds"):
+                raw = gfs.fetch(date, hour, levels)
+            with M.timed("preprocess_seconds"):
+                gx, hx, _gm, _hm = preprocess.preprocess(raw)
+            era_mesh = preprocess.build_output_mesh()
+
+            model = inference.load_model(weights, device)
+            t0 = to_unix(init_dt)
+            with M.timed("inference_seconds"):
+                _real, fields, l2 = inference.run(model, gx, hx, t0, era_mesh, lead_hours, device)
+
+            checks = validate(fields)
+            for k in ("t2m_min_C", "t2m_max_C", "t2m_mean_C", "mslp_min_hPa", "mslp_max_hPa",
+                      "wind10_max_ms", "jet250_max_ms", "precip_max_mm", "nan_count"):
+                M.put(k, checks[k])
+            M.put("latent_l2", l2)
+            M.put("output_valid", 1 if checks["valid"] else 0)
+
+            tmp = Path(tempfile.mkdtemp())
+            meta = {
+                "model": "WeatherMesh-3", "init_time": init_iso, "lead_hours": lead_hours,
+                "valid_time": get_date(t0 + lead_hours * 3600).strftime("%Y-%m-%dT%H:%MZ"),
+                "gfs_cycle": f"{date}{hour:02d}", "input_source": "GFS 0.25deg (both encoders)",
+                "latent_l2": l2, "validation": checks,
+                "created_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            ncname = f"weathermesh3.f{lead_hours:03d}.nc"
+            files = {
+                ncname: outputs.write_netcdf(fields, meta, tmp / ncname),
+                "overview.png": outputs.write_overview_plot(fields, tmp / "overview.png"),
+                "metadata.json": outputs.write_metadata(meta, tmp / "metadata.json"),
+            }
+            uris = s3io.upload_cycle(files, init_iso, lead_hours, bucket)
+            s3io.write_pointer(init_iso, lead_hours, uris, meta, bucket)
+            s3io.write_manifest(bucket)
+
+            M.put("cycle_success", 1)
+            log.info("cycle OK %s +%dh valid=%s inference_l2=%.3f", init_iso, lead_hours, checks["valid"], l2)
+            return {"init": init_iso, "lead_hours": lead_hours, "valid": checks["valid"], "uris": uris}
+    except Exception as e:
+        M.put("cycle_success", 0)
+        tb = traceback.format_exc()
+        log.error("cycle FAILED: %s\n%s", e, tb)
+        _alert("WeatherMesh-3 cycle failed", f"{e}\n\n{tb}")
+        raise
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--lead-hours", type=int, default=int(os.environ.get("WM3_LEAD_HOURS", 6)))
+    p.add_argument("--weights", default=os.environ.get("WM3_WEIGHTS", "model/WeatherMesh3.pt"))
+    p.add_argument("--device", default=os.environ.get("WM3_DEVICE", "cuda"))
+    p.add_argument("--bucket", default=None)
+    a = p.parse_args()
+    run(a.lead_hours, a.weights, a.device, a.bucket)
+
+
+if __name__ == "__main__":
+    main()
