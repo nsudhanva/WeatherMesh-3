@@ -1,28 +1,24 @@
 # WeatherMesh-3 — real-time inference pipeline
 
 Fetches the latest real-time **GFS** initial condition, runs **WeatherMesh-3**, and
-publishes physically-validated forecasts to **S3**, on a 6-hourly schedule, with
-**CloudWatch** observability. Built for the WindBorne ML-Ops take-home.
+publishes physically-validated forecasts to **S3**, every 6 hours, with **CloudWatch**
+observability. Built for the WindBorne ML-Ops take-home.
 
 ## Architecture
 
 ```
-SageMaker notebook GPU — 6-hourly cron (00/06/12/18Z)
-   run_cycle:  GFS fetch → preprocess → WM-3 → validate → netCDF/plots/metadata
-      → S3 (forecasts/init=…/lead=…; invalid → quarantine/…, never latest.json)
-      + CloudWatch (timings, output_valid, diagnostics)  + SNS (on failure/invalid)
+EventBridge (00/06/12/18Z) → Step Functions (wm3-cycle)
+   → SageMaker Processing job (ml.g5.xlarge, ECR image)
+        run_cycle:  GFS fetch → preprocess → WM-3 → validate → netCDF/plots/metadata
+           → S3 (forecasts/init=…/lead=…; invalid → quarantine/…, never latest.json)
+           + CloudWatch (timings, output_valid, diagnostics)  + SNS (on failure/invalid)
 ```
 
-> **Status:** the diagram is the *target* design and is **not implemented** — no
-> Step Functions / Processing IaC is committed, because the g5 processing-job quota is in
-> manual review (a Processing job can't launch or be tested). The **live** runner is a
-> 6-hourly cron on a SageMaker notebook GPU that runs the source via `uv`
-> (`infra/cron-onstart.sh`) — a continuously-on instance (~24 GPU-hr/day). The ephemeral
-> ~1 GPU-hr/day figure would apply to the Processing design once the quota clears.
-
-Why Processing over AWS Batch (in the target design): Batch runs on EC2 G instances,
-blocked by the same on-demand-G quota. SageMaker's endpoint/notebook quotas auto-approved
-instantly; the *processing-job* quota did not — hence the notebook-cron interim.
+The container pulls the weights from S3 at start, so nothing is baked into the image.
+Step Functions retries the job twice before routing a failure to SNS. The GPU exists only
+while a job runs (~1 GPU-hr/day). Processing is used over AWS Batch because Batch runs on
+EC2 G instances, while a Processing job gives the same ephemeral GPU without managing a
+compute environment.
 
 ## Package (`server/wm3pipe`)
 | module | responsibility |
@@ -30,11 +26,17 @@ instantly; the *processing-job* quota did not — hence the notebook-cron interi
 | `gfs.py` | fetch GFS f000 from `noaa-gfs-bdp-pds` via `.idx` byte-ranges (only needed fields) |
 | `preprocess.py` | GFS → both encoder inputs; GFS feeds the HRES encoder too, levels reconciled with `interp_levels` |
 | `inference.py` | load WM-3, run forward, de-normalize to physical units |
-| `validate.py` | physical-plausibility checks (temp/pressure/wind bounds, NaNs) |
+| `validate.py` | physical-plausibility checks (temp/pressure/wind bounds, NaNs) over all 157 channels |
 | `outputs.py` | CF-metadata netCDF + overview plot + `metadata.json` |
 | `s3io.py` | Hive-partitioned S3 upload + `latest.json` pointer |
 | `metrics.py` | CloudWatch metrics + timers |
-| `run_cycle.py` | orchestrates one cycle; emits metrics; SNS alert on failure |
+| `run_cycle.py` | orchestrates one cycle; emits metrics; quarantines invalid output; SNS alert on failure |
+
+## Infrastructure (`server/infra`)
+| file | purpose |
+|---|---|
+| `statemachine.json` | Step Functions definition (`createProcessingJob.sync`, retry x2, catch → SNS) |
+| `dash.json` | CloudWatch dashboard body for the `WeatherMesh3` namespace |
 
 ## The GFS-for-both-encoders note
 ECMWF open data lacks required pressure levels, so **GFS drives both encoders**.
@@ -49,7 +51,7 @@ uv run --with boto3 --with eccodes python server/tests/smoke_fetch.py
 ```
 Container (GPU; fetches weights from S3, writes forecasts to S3):
 ```bash
-# natten builds from a vendored wheel (shi-labs host is unreliable) — fetch it first
+# natten installs from a vendored wheel in S3 — fetch it first
 mkdir -p server/wheels && aws s3 cp \
   s3://wm3-gpu-194290773983/wheels/natten-0.17.3+torch240cu121-cp311-cp311-linux_x86_64.whl server/wheels/
 docker build -f server/Dockerfile -t wm3-pipeline .
@@ -78,6 +80,7 @@ forecasts/init=2026-07-10T18Z/lead=006h/weathermesh3.f006.nc
 forecasts/init=2026-07-10T18Z/lead=006h/overview.png
 forecasts/init=2026-07-10T18Z/metadata.json
 latest.json          # pointer to the newest cycle
+quarantine/…         # same layout for invalid cycles; never updates latest.json
 ```
 
 ## Monitoring (CloudWatch namespace `WeatherMesh3`)
@@ -85,5 +88,6 @@ latest.json          # pointer to the newest cycle
 `cycle_success`, `output_valid`, `nonfinite_count`, field bounds (`t2m_*`, `mslp_*`,
 `jet250_max_ms`), and physical-consistency diagnostics (`neg_humidity_frac`,
 `dewpoint_gt_temp_frac`, `precip_capped_frac`, `precip_p99_mm`). Dashboard body in
-`infra/dash.json`; a staleness/failure alarm pages SNS, and `run_cycle` also publishes
-to SNS directly on failure.
+`infra/dash.json`. Two alarms — `wm3-cycle-failure-or-stale` and `wm3-output-invalid` —
+notify SNS `wm3-alerts`, and `run_cycle` also publishes to SNS directly on failure or
+invalid output.
