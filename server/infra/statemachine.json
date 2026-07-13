@@ -6,7 +6,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
       "Parameters": {
-        "ProcessingJobName.$": "States.Format('wm3-sfn-{}', $$.Execution.Name)",
+        "ProcessingJobName.$": "States.Format('wm3-sfn-{}', States.ArrayGetItem(States.StringSplit($$.Execution.Name, '_'), 0))",
         "AppSpecification": {
           "ImageUri": "194290773983.dkr.ecr.us-east-1.amazonaws.com/wm3-pipeline:latest",
           "ContainerArguments": ["--lead-hours", "6"]
@@ -33,7 +33,12 @@
         "Subject": "WeatherMesh-3 cycle FAILED",
         "Message.$": "$"
       },
-      "End": true
+      "Next": "CycleFailed"
+    },
+    "CycleFailed": {
+      "Type": "Fail",
+      "Error": "CycleFailed",
+      "Cause": "Processing job failed or could not be launched; see the SNS alert."
     }
   }
 }
